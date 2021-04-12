@@ -1,0 +1,2 @@
+# Hyperspectral classification deeplearning
+ 使用深度学习方法实现小样本条件下的高光谱图像分类
