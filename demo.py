@@ -31,7 +31,7 @@ verbose：是否输出详细运行信息，默认输出（True）
 output：输出文件夹名称设定，默认叫output
 '''
 parser = argparse.ArgumentParser(description='settings of this tools')
-parser.add_argument('--method', type=str, default='HResNet')
+parser.add_argument('--method', type=str, default='FAST3DCNN')
 parser.add_argument('--dataset', type=str, default='salinas')
 parser.add_argument('--gt', type=str, default='data/salinas_raw_gt.npy')
 parser.add_argument('--trial_turn', type=int, default=10)
@@ -61,20 +61,6 @@ dataset_shape_x, dataset_shape_y, dataset_bands_num = dataset.shape
 dataset = np.float32(dataset)
 dataset = dataset / dataset.max()
 outputs_chart = useful_tools.OutputData(num_of_label, args.trial_turn)
-# for test
-# # 要先做PCA降维，减小后续工作步骤的工作量
-# pca = PCA(n_components=30, svd_solver='randomized')
-# data_flatten = dataset.reshape((dataset.shape[0]*dataset.shape[1], dataset.shape[2]))
-# pca.fit(data_flatten)
-# data_flatten_pca = pca.transform(data_flatten)
-# dataset_PCA = data_flatten_pca.reshape((dataset.shape[0], dataset.shape[1], 30))
-# dataset = dataset_PCA
-# dataset_shape_x, dataset_shape_y, dataset_bands_num = dataset.shape
-# dataset_PCA = np.float32(dataset_PCA)
-# PCA_range = np.max(dataset_PCA) - np.min(dataset_PCA)
-# dataset_PCA = (dataset_PCA - np.min(dataset_PCA)) / PCA_range
-# dataset_PCA = dataset_PCA / dataset_PCA.max()
-# for test end
 for current_trial_turn in range(args.trial_turn):
     # padding以便进行卷积等操作,得到的padding_dataset在外面加了patch/2圈数据
     padding_dataset = useful_tools.padding(dataset, args.patch)
@@ -119,116 +105,64 @@ for current_trial_turn in range(args.trial_turn):
     # 网络训练部分
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     time_train_begin = time.time()
-    if gan_flag:
-        gen_net = gen_net.to(device)
-        net = net.to(device)
-        optimizer_G = torch.optim.Adam(gen_net.parameters(), lr=0.01)
-        optimizer_D = torch.optim.Adam(net.parameters(), lr=0.01)
-        loss_func_G = torch.nn.CrossEntropyLoss()
-        loss_func_D = torch.nn.BCELoss()
-        net.train()
-        for epoch in range(args.epoch_a):
-            loss_list_D = np.zeros(train_label.shape)
-            loss_list_G = np.zeros(train_label.shape)
-            loss_list_iter_D = 0
-            loss_list_iter_G = 0
-            for i, data in enumerate(train_loader):
-                inputs, labels = data
-                inputs, labels = inputs.to(device), labels.to(device)
-                # 先训练判别器
-                optimizer_D.zero_grad()
-                real_outputs_bin, real_outputs_cls = net(inputs)
-                real = torch.ones(real_outputs_bin.size(0), 1).cuda()
-                fake = torch.zeros(real_outputs_bin.size(0), 1).cuda()
-                # 生成真伪标签和随机噪声，1代表真，0代表伪
-                noise = torch.randn((real_outputs_bin.size(0), 17, 1, 1)).cuda()
-                real_loss = loss_func_D(real_outputs_bin, real)
-                fake_patch = gen_net(noise, labels + 1)
-                fake_outputs_bin, _ = net(fake_patch)
-                fake_loss = loss_func_D(fake_outputs_bin, fake)
-                dis_loss = real_loss + fake_loss
-                loss_list_D[loss_list_iter_D] = dis_loss.cpu().detach().item()
-                loss_list_iter_D = loss_list_iter_D + 1
-                with torch.autograd.detect_anomaly():
-                    dis_loss.backward(retain_graph=True)
-                optimizer_D.step()
-                # 再训练生成器
-                _, fake_outputs_cls = net(fake_patch)
-                optimizer_G.zero_grad()
-                gen_loss = loss_func_G(fake_outputs_cls, labels)
-                loss_list_G[loss_list_iter_G] = gen_loss.cpu().detach().item()
-                loss_list_iter_G = loss_list_iter_G + 1
-                with torch.autograd.detect_anomaly():
-                    gen_loss.backward()
-                optimizer_G.step()
-            avg_loss_D = np.average(loss_list_D)
-            avg_loss_G = np.average(loss_list_G)
-            early_stopping(avg_loss_D, net)
-            if early_stopping.early_stop:
-                break
-            if args.verbose:
-                print("epoch: " + str(epoch + 1) + " . Discriminator_loss:" + str(round(avg_loss_D, 6)) +
-                      " . Generator_loss:" + str(round(avg_loss_G, 6)) + ".")
-
-    else:
-        net = net.to(device)
-        optimizer = torch.optim.Adadelta(net.parameters(), lr=1.0)
-        loss_func = torch.nn.CrossEntropyLoss()
-        net.train()
-        for epoch in range(args.epoch_a):
-            loss_list = np.zeros(train_label.shape)
-            loss_list_iter = 0
-            correct = 0
-            total = 0
-            for i, data in enumerate(train_loader):
-                inputs, labels = data
-                inputs, labels = inputs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                outputs = net(inputs)
-                loss = loss_func(outputs, labels)
-                loss_list[loss_list_iter] = loss.cpu().detach().item()
-                loss_list_iter += 1
-                loss.backward()
-                optimizer.step()
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-            avg_loss = np.average(loss_list[0:loss_list_iter])
-            early_stopping(avg_loss, net)
-            if early_stopping.early_stop:
-                break
-            if args.verbose:
-                print("epoch: " + str(epoch + 1) + " . loss:" + str(round(avg_loss, 6)) +
-                      ". accuracy: " + str(round((correct / total)*100, 4)) + ".")
-        optimizer = torch.optim.Adadelta(net.parameters(), lr=0.1)
-        for epoch in range(args.epoch_b):
-            loss_list = np.zeros(train_label.shape)
-            loss_list_iter = 0
-            correct = 0
-            total = 0
-            for i, data in enumerate(train_loader):
-                inputs, labels = data
-                inputs, labels = inputs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                outputs = net(inputs)
-                loss = loss_func(outputs, labels)
-                loss_list[loss_list_iter] = loss.cpu().detach().item()
-                loss_list_iter += 1
-                loss.backward()
-                optimizer.step()
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-            avg_loss = np.average(loss_list[0:loss_list_iter])
-            early_stopping(avg_loss, net)
-            if early_stopping.early_stop:
-                break
-            if args.verbose:
-                print("epoch: " + str(epoch + 1 + args.epoch_a) + " . loss:" + str(round(avg_loss, 6)) +
-                      ". accuracy: " + str(round((correct / total)*100, 4)) + ".")
-        time_train_end = time.time()
-        print("training end. time:" + str(round(time_train_end - time_train_begin)) + "s")
-        outputs_chart.set_data('train_time', current_trial_turn, round(time_train_end - time_train_begin))
+    net = net.to(device)
+    optimizer = torch.optim.Adadelta(net.parameters(), lr=1.0)
+    loss_func = torch.nn.CrossEntropyLoss()
+    net.train()
+    for epoch in range(args.epoch_a):
+        loss_list = np.zeros(train_label.shape)
+        loss_list_iter = 0
+        correct = 0
+        total = 0
+        for i, data in enumerate(train_loader):
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = loss_func(outputs, labels)
+            loss_list[loss_list_iter] = loss.cpu().detach().item()
+            loss_list_iter += 1
+            loss.backward()
+            optimizer.step()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        avg_loss = np.average(loss_list[0:loss_list_iter])
+        early_stopping(avg_loss, net)
+        if early_stopping.early_stop:
+            break
+        if args.verbose:
+            print("epoch: " + str(epoch + 1) + " . loss:" + str(round(avg_loss, 6)) +
+                  ". accuracy: " + str(round((correct / total)*100, 4)) + ".")
+    optimizer = torch.optim.Adadelta(net.parameters(), lr=0.1)
+    for epoch in range(args.epoch_b):
+        loss_list = np.zeros(train_label.shape)
+        loss_list_iter = 0
+        correct = 0
+        total = 0
+        for i, data in enumerate(train_loader):
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = loss_func(outputs, labels)
+            loss_list[loss_list_iter] = loss.cpu().detach().item()
+            loss_list_iter += 1
+            loss.backward()
+            optimizer.step()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        avg_loss = np.average(loss_list[0:loss_list_iter])
+        early_stopping(avg_loss, net)
+        if early_stopping.early_stop:
+            break
+        if args.verbose:
+            print("epoch: " + str(epoch + 1 + args.epoch_a) + " . loss:" + str(round(avg_loss, 6)) +
+                  ". accuracy: " + str(round((correct / total)*100, 4)) + ".")
+    time_train_end = time.time()
+    print("training end. time:" + str(round(time_train_end - time_train_begin)) + "s")
+    outputs_chart.set_data('train_time', current_trial_turn, round(time_train_end - time_train_begin))
     # 网络训练部分 end
     # 预测部分
     # padding_dataset = padding_dataset / padding_dataset.max()

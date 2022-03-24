@@ -206,6 +206,7 @@ class FAST3DCNN(nn.Module):
         return b * t * c * w * h
 
     def forward(self, x):
+        x = x.unsqueeze(1)
         x = F.relu(self.conv1_bn(self.conv1(x)))
         x = F.relu(self.conv2_bn(self.conv2(x)))
         x = F.relu(self.conv3_bn(self.conv3(x)))
